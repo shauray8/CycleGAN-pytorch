@@ -91,10 +91,11 @@ class Discriminator(nn.Module):
         return F.avg_pool(x, x.size()[2:]).view(x.size()[0], -1)
 
 
-g = Generator(28*28, 12)
-d = Discriminator(12)
-
-print(g)
-print(d)
-
+if __name__ == "__main__":
+    g = Generator(28*28, 12)
+    d = Discriminator(12)
+    
+    print(g)
+    print(d)
+    
 
