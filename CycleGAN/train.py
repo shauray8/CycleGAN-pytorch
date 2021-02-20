@@ -10,6 +10,8 @@ from torch.autograd import Variable
 from tqdm import trange
 import random
 
+torch.cuda.empty_cache()
+
 device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
 
 input_nc = 3
@@ -52,10 +54,11 @@ optimizer_D_B = torch.optim.Adam(netD_B.parameters(), lr=lr, betas=(0.5, 0.999))
 #scheduling
 n_epochs = 200
 epoch = 0
-batchSize = 32
+batchSize = 2
 size = 256
 decay_epoch = 100
     
+
 class ImageDataset(Dataset):
     def __init__(self, root, transforms_=None, unaligned=False, mode='train'):
         self.transform = transforms.Compose(transforms_)
@@ -77,6 +80,7 @@ class ImageDataset(Dataset):
     def __len__(self):
         return max(len(self.files_A), len(self.files_B))
 
+
 class LambdaLR():
     def __init__(self, n_epochs, offset, decay_start_epoch):
         assert ((n_epochs - decay_start_epoch) > 0), "Decay must start before the training"
@@ -88,12 +92,37 @@ class LambdaLR():
         return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch)/(self.n_epochs - self.decay_start_epoch)
 
 
+class ReplayBuffer():
+    def __init__(self, max_size=50):
+        assert (max_size > 0), 'Empty buffer or trying to create a black hole. Be careful.'
+        self.max_size = max_size
+        self.data = []
+
+    def push_and_pop(self, data):
+        to_return = []
+        for element in data.data:
+            element = torch.unsqueeze(element, 0)
+            if len(self.data) < self.max_size:
+                self.data.append(element)
+                to_return.append(element)
+            else:
+                if random.uniform(0,1) > 0.5:
+                    i = random.randint(0, self.max_size-1)
+                    to_return.append(self.data[i].clone())
+                    self.data[i] = element
+                else:
+                    to_return.append(element)
+        return Variable(torch.cat(to_return))
+
+
 lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(optimizer_G, lr_lambda=LambdaLR(n_epochs, epoch, decay_epoch).step)
 
 lr_scheduler_D_A = torch.optim.lr_scheduler.LambdaLR(optimizer_D_A, lr_lambda=LambdaLR(n_epochs, epoch, decay_epoch).step)
 
 lr_scheduler_D_B = torch.optim.lr_scheduler.LambdaLR(optimizer_D_B, lr_lambda=LambdaLR(n_epochs, epoch, decay_epoch).step)
 
+fake_A_buffer = ReplayBuffer()
+fake_B_buffer = ReplayBuffer()
 
 input_A = torch.FloatTensor(batchSize, input_nc, size, size)
 input_B = torch.FloatTensor(batchSize, output_nc, size, size)
@@ -112,9 +141,97 @@ dataloader = DataLoader(ImageDataset("../../data/apple2orange", transforms_=tran
 
 for epoch in (w := trange(n_epochs)):
     for id, batch in enumerate(dataloader):
-        real_A = Variable(input_A.copy_(batch["A"]))
-        real_B = Variable(input_B.copy_(batch["B"]))
+        real_A = Variable(input_A.copy_(batch["A"])).to('cuda')
+        real_B = Variable(input_B.copy_(batch["B"])).to('cuda')
 
-        print(real_A, real_B)
-        break
-    break
+
+        ####### Generator A2B and B2A #######
+
+        optimizer_G.zero_grad()
+
+        #G_A2B(B) -> B
+        same_B = netG_A2B(real_B)
+        loss_identity_B = criterion_identity(same_B, real_B)*5.0
+
+        #G_B2A(A) --> A
+        same_A = netG_A2B(real_A)
+        loss_identity_A = criterion_identity(same_A, real_A)*5.0
+
+        #GAN loss
+        fake_B = netG_A2B(real_A)
+        pred_fake = netD_B(fake_B)
+        loss_GAN_A2B = criterion_GAN(pred_fake, target_real)
+
+        fake_A = netG_B2A(real_B)
+        pred_fake = netD_A(fake_A)
+        loss_GAN_B2A = criterion_GAN(pred_fake, target_real)
+
+        #Cycle loss
+        recovered_A = netG_B2A(fake_B)
+        loss_cycle_ABA = criterion_cycle(recovered_A, real_A)*10.0
+
+        recovered_B = netG_A2B(fake_A)
+        loss_cycle_BAB = criterion_cycle(recovered_B, real_B)*10.0
+
+        #total loss
+        loss_G = loss_identity_A + loss_identity_B + loss_GAN_A2B + loss_GAN_B2A + loss_cycle_ABA + loss_cycle_BAB
+        loss.backward()
+
+        optimizer_G.step()
+
+        ##########################################
+        #                                        #  
+        #            DISCRIMINATOR A             #
+        #                                        #
+        ##########################################
+
+
+        optimizer_D_A.zero_grad()
+
+        #real loss
+        pred_real = netD_A(real_A)
+        loss_D_real = criterion_GAN(pred_real, target_real)
+
+        #fake loss
+        fake_A = fake_A_buffer.push_and_pop(fake_A)
+        pred_fake = netD_A(fake_A.detach())
+        loss_D_fake = criterion_GAN(pred_fake, target_fake)
+
+        #total loss
+        loss_D_A = (loss_D_real + loss_D_fake)*.5
+        loss_D_A.backward()
+
+        optimizer_D_A.step()
+
+        #########################################
+
+        #######Discriminator B ##############
+
+        optimizer_D_B.zero_grad()
+
+        #real loss
+        pred_real = netD_B(real_B)
+        loss_D_real = criterion_GAN(pred_real, target_real)
+
+        #fake loss
+        fake_B = fake_B_buffer.push_and_pop(fake_B)
+        pred_fake = netD_B(fake_B.detach())
+        loss_D_fake = criterion_GAN(pred_fake, target_fake)
+
+        #total loss
+        loss_D_B = (loss_D_real + loss_D_fake)*.5
+        loss_D_B.backward()
+
+        optimizer_D_B.step()
+
+
+
+    lr_scheduler_G.step()
+    lr_scheduler_D_A.step()
+    lr_scheduler_D_B.step()
+
+
+    torch.save(netG_A2B.state_dict(), 'output/netG_A2B.pth')
+    torch.save(netG_B2A.state_dict(), 'output/netG_B2A.pth')
+    torch.save(netD_A.state_dict(), 'output/netD_A.pth')
+    torch.save(netD_B.state_dict(), 'output/netD_B.pth')

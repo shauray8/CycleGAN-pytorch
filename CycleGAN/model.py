@@ -15,9 +15,8 @@ class ResidualBlock(nn.Module):
                     nn.InstanceNorm2d(in_features),
                 )
 
-        def forward(self, x):
-            x = self.conv1(x)
-            return x
+    def forward(self, x):
+        return x + self.conv1(x)
 
 class Generator(nn.Module):
     def __init__(self, input_nc, output_nc, n_residual_blocks=9):
@@ -49,6 +48,14 @@ class Generator(nn.Module):
 
         out_features = in_features // 2
         for _ in range(2):
+            model += [  nn.ConvTranspose2d(in_features, out_features, 3, stride=2, padding=1, output_padding=1),
+                        nn.InstanceNorm2d(out_features),
+                        nn.ReLU(inplace=True) ]
+            in_features = out_features
+            out_features = in_features//2
+
+        # output layer
+        for _ in range(2):
             model += [  nn.ReflectionPad2d(3),
                     nn.Conv2d(64, output_nc, 7),
                     nn.Tanh()   ]
@@ -56,7 +63,8 @@ class Generator(nn.Module):
         self.model = nn.Sequential(*model)
 
     def forward(self, x):
-        return self.model(x)
+        x = self.model(x)
+        return x
 
 
 class Discriminator(nn.Module):
