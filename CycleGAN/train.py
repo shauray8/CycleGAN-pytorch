@@ -54,7 +54,7 @@ optimizer_D_B = torch.optim.Adam(netD_B.parameters(), lr=lr, betas=(0.5, 0.999))
 #scheduling
 n_epochs = 200
 epoch = 0
-batchSize = 2
+batchSize = 1
 size = 256
 decay_epoch = 100
     

@@ -55,10 +55,9 @@ class Generator(nn.Module):
             out_features = in_features//2
 
         # output layer
-        for _ in range(2):
-            model += [  nn.ReflectionPad2d(3),
-                    nn.Conv2d(64, output_nc, 7),
-                    nn.Tanh()   ]
+        model += [  nn.ReflectionPad2d(3),
+              nn.Conv2d(64, output_nc, 7),
+              nn.Tanh()   ]
 
         self.model = nn.Sequential(*model)
 
@@ -100,8 +99,8 @@ class Discriminator(nn.Module):
 
 
 if __name__ == "__main__":
-    g = Generator(28*28, 12)
-    d = Discriminator(12)
+    g = Generator(3, 3)
+    d = Discriminator(3)
     
     print(g)
     print(d)
